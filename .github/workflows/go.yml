@@ -1,20 +1,20 @@
-name: Go
-on: [push,pull_request]
-jobs:
+name: Go  # 名称
+on: [push,pull_request] # 触发工作流程的动作
+jobs:       # 定义了 具体的工作
 
-  build:
-    name: Build & Test
-    runs-on: ubuntu-latest
-    steps:
+  build:      # 工作标识符
+    name: Build & Test  # 工作名称
+    runs-on: ubuntu-latest # 指定运行环境
+    steps:    # 定义一系列动作
 
-    - name: Set up Go 1.13
-      uses: actions/setup-go@v1
+    - name: Set up Go 1.13  
+      uses: actions/setup-go@v1 # actions/setup-go@v1 是个 GitHub Action 
       with:
-        go-version: 1.13
+        go-version: 1.13    # 版本指定为 1.13。
       id: go
 
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v1
+      uses: actions/checkout@v1   # 检出仓库代码
 
     - name: Build & Test
-      run: make ci
+      run: make ci      # 构建项目并运行测试
