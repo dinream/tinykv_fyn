@@ -44,6 +44,7 @@ var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unav
 // If any Storage method returns an error, the raft instance will
 // become inoperable and refuse to participate in elections; the
 // application is responsible for cleanup and recovery in this case.
+// * 从 存储 中检索 日志 条目
 type Storage interface {
 	// InitialState returns the saved HardState and ConfState information.
 	InitialState() (pb.HardState, pb.ConfState, error)
@@ -85,9 +86,11 @@ type MemoryStorage struct {
 }
 
 // NewMemoryStorage creates an empty MemoryStorage.
+// * 内存存储，存者一些条目 和 快照， 这里创建一个空的存储
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
+		// 从头开始时，请在第 0 项处使用虚拟条目填充列表。
 		ents:     make([]pb.Entry, 1),
 		snapshot: pb.Snapshot{Metadata: &pb.SnapshotMetadata{ConfState: &pb.ConfState{}}},
 	}

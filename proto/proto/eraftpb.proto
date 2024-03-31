@@ -11,11 +11,12 @@ enum EntryType {
 //
 // For normal entries, the data field should contain the data change that should be applied.
 // The context field can be used for any contextual data that might be relevant to the
-// application of the data.
-//
+// application of the data. 
+// 数据字段应包含应应用的数据更改上下文字段可用于任何可能与上下文相关的数据数据的应用。
 // For configuration changes, the data will contain the ConfChange message and the
 // context will provide anything needed to assist the configuration change. The context
 // is for the user to set and use in this case.
+// 对于配置更改，数据将包含 ConfChange 消息和context 将提供协助配置更改所需的任何内容。 上下文供用户在这种情况下设置和使用。
 message Entry {
     EntryType entry_type = 1;
     uint64 term = 2;

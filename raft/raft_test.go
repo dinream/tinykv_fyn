@@ -43,6 +43,7 @@ func nextEnts(r *Raft, s *MemoryStorage) (ents []pb.Entry) {
 	return ents
 }
 
+// 状态机接口，可以读取消息并处理
 type stateMachine interface {
 	Step(m pb.Message) error
 	readMessages() []pb.Message
@@ -73,11 +74,11 @@ func TestProgressLeader2AB(t *testing.T) {
 }
 
 func TestLeaderElection2AA(t *testing.T) {
-	var cfg func(*Config)
-	tests := []struct {
+	var cfg func(*Config) // 函数变量
+	tests := []struct {   // 结构体数组
 		*network
 		state   StateType
-		expTerm uint64
+		expTerm uint64 // 预期 Term
 	}{
 		{newNetworkWithConfig(cfg, nil, nil, nil), StateLeader, 1},
 		{newNetworkWithConfig(cfg, nil, nil, nopStepper), StateLeader, 1},
@@ -562,10 +563,10 @@ func TestProposal2AB(t *testing.T) {
 }
 
 // TestHandleMessageType_MsgAppend ensures:
-// 1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
-// 2. If an existing entry conflicts with a new one (same index but different terms),
-//    delete the existing entry and all that follow it; append any new entries not already in the log.
-// 3. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry).
+//  1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
+//  2. If an existing entry conflicts with a new one (same index but different terms),
+//     delete the existing entry and all that follow it; append any new entries not already in the log.
+//  3. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry).
 func TestHandleMessageType_MsgAppend2AB(t *testing.T) {
 	tests := []struct {
 		m       pb.Message
@@ -1573,14 +1574,16 @@ func votedWithConfig(configFunc func(*Config), id, vote, term uint64) *Raft {
 	return sm
 }
 
+// *保存整个网络的节点信息
 type network struct {
-	peers   map[uint64]stateMachine
-	storage map[uint64]*MemoryStorage
-	dropm   map[connem]float64
-	ignorem map[pb.MessageType]bool
+	peers   map[uint64]stateMachine   // *id 和状态机的 map
+	storage map[uint64]*MemoryStorage // *id 和内存储存的 map
+	dropm   map[connem]float64        // *记录不同连接事件的概率值，模拟网络中事件的丢失
+	ignorem map[pb.MessageType]bool   // * 记录不同消息类型消息是否被忽略
 
 	// msgHook is called for each message sent. It may inspect the
 	// message and return true to send it or false to drop it.
+	// * 每发送一条消息都会调用 msgHook。 它可以检查消息并返回 true 来发送消息或返回 false 来删除消息。
 	msgHook func(pb.Message) bool
 }
 
@@ -1594,11 +1597,13 @@ func newNetwork(peers ...stateMachine) *network {
 
 // newNetworkWithConfig is like newNetwork but calls the given func to
 // modify the configuration of any state machines it creates.
+// new Network WithConfig 与 new Network 类似，但调用给定函数来修改它创建的任何状态机的配置。
 func newNetworkWithConfig(configFunc func(*Config), peers ...stateMachine) *network {
 	size := len(peers)
-	peerAddrs := idsBySize(size)
-
+	peerAddrs := idsBySize(size) // 从 1开始 到 size
+	// *存储每一个 peer 的状态机 ， raft 也是一种 状态机
 	npeers := make(map[uint64]stateMachine, size)
+	// *存储 每一个 peer  内存存储状态
 	nstorage := make(map[uint64]*MemoryStorage, size)
 
 	for j, p := range peers {
@@ -1613,9 +1618,11 @@ func newNetworkWithConfig(configFunc func(*Config), peers ...stateMachine) *netw
 			sm := newRaft(cfg)
 			npeers[id] = sm
 		case *Raft:
+			// *本来就是 Raft 则不需要 Memory Store
 			v.id = id
 			npeers[id] = v
 		case *blackHole:
+			// *至于是 black hole 则 不需要管 Memeory Store 和  id
 			npeers[id] = v
 		default:
 			panic(fmt.Sprintf("unexpected state machine type: %T", p))
@@ -1629,12 +1636,15 @@ func newNetworkWithConfig(configFunc func(*Config), peers ...stateMachine) *netw
 	}
 }
 
+// *模拟网络上的发送消息行为， 包含：发送，发送方处理，发送方产生回复
+// TODO 由此 readMessages 应该是需要删除读完的消息的。
+// TODO 由此 raft 产生的消息应该是要保存在 raft 中的 某个地方的
 func (nw *network) send(msgs ...pb.Message) {
-	for len(msgs) > 0 {
+	for len(msgs) > 0 { // for 循环会一直走下去
 		m := msgs[0]
 		p := nw.peers[m.To]
 		p.Step(m)
-		msgs = append(msgs[1:], nw.filter(p.readMessages())...)
+		msgs = append(msgs[1:], nw.filter(p.readMessages())...) // *将剩余的消息和发送目标产生的消息拼接起来
 	}
 }
 
@@ -1692,6 +1702,7 @@ func (nw *network) filter(msgs []pb.Message) []pb.Message {
 	return mm
 }
 
+// *连接事件的类型，类似于表示网络上的一个通道
 type connem struct {
 	from, to uint64
 }
@@ -1711,6 +1722,14 @@ func idsBySize(size int) []uint64 {
 	return ids
 }
 
+/**
+* 创建一个测试配置
+* @param id 当前 id
+* @param peers  所有 id
+* @param election 选举超时时间
+* @param heatbeat 心跳时间
+* @param storage 内存存储
+ */
 func newTestConfig(id uint64, peers []uint64, election, heartbeat int, storage Storage) *Config {
 	return &Config{
 		ID:            id,
@@ -1721,6 +1740,9 @@ func newTestConfig(id uint64, peers []uint64, election, heartbeat int, storage S
 	}
 }
 
+/*
+* 创建一个 raft
+ */
 func newTestRaft(id uint64, peers []uint64, election, heartbeat int, storage Storage) *Raft {
 	return newRaft(newTestConfig(id, peers, election, heartbeat, storage))
 }
