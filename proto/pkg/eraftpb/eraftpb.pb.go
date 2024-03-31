@@ -524,6 +524,7 @@ func (m *HardState) GetCommit() uint64 {
 }
 
 // ConfState contains the current membership information of the raft group
+// *ConfState 包含当前 raft 组的成员信息
 type ConfState struct {
 	// all node id
 	Nodes                []uint64 `protobuf:"varint,1,rep,packed,name=nodes" json:"nodes,omitempty"`

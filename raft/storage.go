@@ -90,7 +90,7 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
-		// 从头开始时，请在第 0 项处使用虚拟条目填充列表。
+		// *从头开始时，请在第 0 项处使用虚拟条目填充列表。
 		ents:     make([]pb.Entry, 1),
 		snapshot: pb.Snapshot{Metadata: &pb.SnapshotMetadata{ConfState: &pb.ConfState{}}},
 	}
@@ -117,13 +117,13 @@ func (ms *MemoryStorage) Entries(lo, hi uint64) ([]pb.Entry, error) {
 	if lo <= offset {
 		return nil, ErrCompacted
 	}
-	if hi > ms.lastIndex()+1 {
+	if hi > ms.lastIndex()+1 { // 不包括 hi 的位置，所以即使 hi = ms.lastIndex()+1 裁剪的时候最多 把  ms.lastIndex() 也就是最后一个拿走
 		log.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, ms.lastIndex())
 	}
 
 	ents := ms.ents[lo-offset : hi-offset]
 	if len(ms.ents) == 1 && len(ents) != 0 {
-		// only contains dummy entries.
+		// only contains dummy entries. 取走的 条目 无效
 		return nil, ErrUnavailable
 	}
 	return ents, nil
@@ -151,7 +151,7 @@ func (ms *MemoryStorage) LastIndex() (uint64, error) {
 }
 
 func (ms *MemoryStorage) lastIndex() uint64 {
-	return ms.ents[0].Index + uint64(len(ms.ents)) - 1
+	return ms.ents[0].Index + uint64(len(ms.ents)) - 1 // * 最后一个日志条目的索引
 }
 
 // FirstIndex implements the Storage interface.
@@ -162,7 +162,7 @@ func (ms *MemoryStorage) FirstIndex() (uint64, error) {
 }
 
 func (ms *MemoryStorage) firstIndex() uint64 {
-	return ms.ents[0].Index + 1
+	return ms.ents[0].Index + 1 // * 第一个日志的条目索引 + 1
 }
 
 // Snapshot implements the Storage interface.

@@ -14,13 +14,18 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"errors"
+	"log"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
-//  snapshot/first.....applied....committed....stabled.....last
-//  --------|------------------------------------------------|
-//                            log entries
+//	snapshot/first.....applied....committed....stabled.....last
+//	--------|------------------------------------------------|
+//	                          log entries
 //
 // for simplify the RaftLog implement should manage all log entries
 // that not truncated
@@ -30,22 +35,25 @@ type RaftLog struct {
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// * 已知在多数节点上的稳定存储中的最高日志位置。
 	committed uint64
 
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
+	// * 已经应用到状态机的最大 log 位置
 	// Invariant: applied <= committed
 	applied uint64
 
 	// log entries with index <= stabled are persisted to storage.
 	// It is used to record the logs that are not persisted by storage yet.
 	// Everytime handling `Ready`, the unstabled logs will be included.
+	// * 已经被持久化存储的最大 log 位置。
 	stabled uint64
 
 	// all entries that have not yet compact.
 	entries []pb.Entry
 
-	// the incoming unstable snapshot, if any.
+	// the incoming unstable snapshot, if any. 传入的不稳定快照（如果有）。
 	// (Used in 2C)
 	pendingSnapshot *pb.Snapshot
 
@@ -56,6 +64,35 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	tmp_Rlog := &RaftLog{
+		storage:         storage,
+		committed:       0,
+		applied:         0,
+		stabled:         0,
+		entries:         []pb.Entry{},
+		pendingSnapshot: nil,
+	} // * 初始日志是空的
+	// 现在添加一些初始条目
+	// 获取初始条目索引
+	firstIdx, err := storage.FirstIndex()
+	if err != nil {
+		log.Fatal(err)
+		return nil
+	}
+	// 获取末尾条目索引
+	lastIdx, err := storage.LastIndex()
+	if err != nil {
+		log.Fatal(err)
+		return nil
+	}
+	// 获取这个范围内的条目，即 storage 中全部的
+	initEntries, err := storage.Entries(firstIdx, lastIdx+1)
+	if err != nil {
+		log.Fatal(err)
+		return nil
+	}
+	tmp_Rlog.entries = append(tmp_Rlog.entries, initEntries...)
+	tmp_Rlog.stabled = lastIdx // 存储中 读到的 最后一个有效的索引 就是 stable 的。
 	return nil
 }
 
@@ -89,11 +126,34 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	if len(l.entries) == 0 {
+		if l.pendingSnapshot != nil {
+			return l.pendingSnapshot.Metadata.Index
+		}
+		return 0
+	}
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
+// 此处的索引是 storage 中的 索引
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if i == 0 { // TODO 0 索引的意思
+		return 1, nil // TODO Term 1 的含义
+	}
+	if len(l.entries) == 0 { // 日志没有条目，检查快照。
+		// 检查临时快照
+		if l.pendingSnapshot != nil && i == l.pendingSnapshot.Metadata.Index {
+			return l.pendingSnapshot.Metadata.Term, nil
+		}
+		// 检查存储中的永久快照
+		snapshot, err := l.storage.Snapshot()
+		if err != ErrSnapshotTemporarilyUnavailable && i == snapshot.Metadata.Index {
+			return l.pendingSnapshot.Metadata.Term, nil
+		}
+		return 1, errors.New("entry id empty")
+	}
+	// 正常返回
+	return l.entries[i-l.entries[0].Index].Term, nil
 }
