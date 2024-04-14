@@ -102,19 +102,32 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	// 进行 日志条目的压缩,主要是紧凑 内存中的日志,即 l.entries : 不需要实现,没有看到调用
+	store_index, _ := l.storage.FirstIndex()
+	if len(l.entries) > 0 {
+		firstIndex := l.entries[0].Index
+		if store_index > firstIndex { // 更新 l.entries
+			l.entries = l.entries[store_index-firstIndex:]
+		}
+	}
 }
 
-// allEntries return all the entries not compacted.
-// note, exclude any dummy entries from the return value.
-// note, this is one of the test stub functions you need to implement.
+// allEntries return all the entries not compacted. 返回所有未压缩的目录
+// note, exclude any dummy entries from the return value. 排除虚拟条目
+// note, this is one of the test stub functions you need to implement. 	测试存根函数之一
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) == 0 {
+		return []pb.Entry{}
+	}
+
+	return l.entries
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+
 	return nil
 }
 
