@@ -31,6 +31,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -156,6 +157,8 @@ func testNonleaderStartElection(t *testing.T, state StateType) {
 		{From: 1, To: 2, Term: 2, MsgType: pb.MessageType_MsgRequestVote},
 		{From: 1, To: 3, Term: 2, MsgType: pb.MessageType_MsgRequestVote},
 	}
+	log.Infof("length of msgs: %d\n", len(msgs))
+	log.Infof("msgs: %v\n", msgs)
 	if !reflect.DeepEqual(msgs, wmsgs) {
 		t.Errorf("msgs = %v, want %v", msgs, wmsgs)
 	}
@@ -291,6 +294,7 @@ func testNonleaderElectionTimeoutRandomized(t *testing.T, state StateType) {
 		for len(r.readMessages()) == 0 {
 			r.tick()
 			time++
+			log.Infof("time:%d\n", time)
 		}
 		timeouts[time] = true
 	}

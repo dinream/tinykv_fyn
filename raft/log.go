@@ -16,7 +16,8 @@ package raft
 
 import (
 	"errors"
-	"log"
+
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -93,7 +94,7 @@ func newLog(storage Storage) *RaftLog {
 	}
 	tmp_Rlog.entries = append(tmp_Rlog.entries, initEntries...)
 	tmp_Rlog.stabled = lastIdx // 存储中 读到的 最后一个有效的索引 就是 stable 的。
-	return nil
+	return tmp_Rlog
 }
 
 // We need to compact the log entries in some point of time like
@@ -136,7 +137,7 @@ func (l *RaftLog) LastIndex() uint64 {
 }
 
 // Term return the term of the entry in the given index
-// 此处的索引是 storage 中的 索引
+// 此处的索引 i 是 storage 中的 索引
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if i == 0 { // TODO 0 索引的意思
