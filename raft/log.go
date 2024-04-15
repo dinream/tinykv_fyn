@@ -117,24 +117,53 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement. 	测试存根函数之一
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	if len(l.entries) == 0 {
-		return []pb.Entry{}
-	}
+	ret := []pb.Entry{}
+	for _, ent := range l.entries {
+		// if ent.Data != nil { // 如果 这里的 ent 的 Data 是空的,说明 entry 无效
+		// }
+		ret = append(ret, ent)
 
-	return l.entries
+	}
+	return ret
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return []pb.Entry{}
+	}
+	if l.stabled == 0 {
+		// 对于一个 stabled = 0 的 raft ，
+		// 它可能没有通过 config 中 storage 来初始化，这种初始化在网络中也是可能出现的
+		// 此时它的每一个 entry 都是 unstable
+		return l.entries
+		// log.Infof("stabled = %d", l.stabled)
+	}
+	if !(int(l.stabled-l.entries[0].Index)+1 >= 0 && int((l.stabled-l.entries[0].Index)+1) < len(l.entries)) {
+		// 如果 l.stabled 不在 l.entries 的范围之内: 最小是:l.entries[0].Index 的前一个,最大是 l.entries 的最后一个 Index
+		// (l.stabled-l.entries[0].Index)+1 表示,下一个 unstabled 的下标
+		return []pb.Entry{}
+	}
 
-	return nil
+	return l.entries[(l.stabled-l.entries[0].Index)+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) == 0 {
+		return []pb.Entry{}
+	}
+	if l.committed < l.applied {
+		log.Infof("committed:%d > applied:%d \n", l.committed, l.applied)
+		return nil
+	}
+	if !(int(l.applied-l.entries[0].Index+1) >= 0 && int(l.committed-l.entries[0].Index) < len(l.entries)) {
+		return nil
+	}
+
+	return l.entries[l.applied-l.entries[0].Index+1 : l.committed-l.entries[0].Index+1]
 }
 
 // LastIndex return the last index of the log entries
@@ -147,6 +176,16 @@ func (l *RaftLog) LastIndex() uint64 {
 		return 0
 	}
 	return l.entries[len(l.entries)-1].Index
+}
+func (l *RaftLog) FirstIndex() uint64 {
+	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		if l.pendingSnapshot != nil {
+			return l.pendingSnapshot.Metadata.Index
+		}
+		return 0
+	}
+	return l.entries[0].Index
 }
 
 // Term return the term of the entry in the given index

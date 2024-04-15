@@ -412,9 +412,10 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 	commitNoopEntry(r, s)
 	li := r.RaftLog.LastIndex()
 	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
-
+	log.Infof("msgs_num:%d ,msg:%+v\n", len(r.msgs), r.msgs)
 	for _, m := range r.readMessages() {
 		r.Step(acceptAndReply(m))
+		log.Infof("msgs_num:%d ,msg:%+v\n", len(r.msgs), acceptAndReply(m))
 	}
 
 	if g := r.RaftLog.committed; g != li+1 {
@@ -426,6 +427,7 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 	}
 	msgs := r.readMessages()
 	sort.Sort(messageSlice(msgs))
+	log.Infof("msgs_num:%d\n", len(msgs))
 	for i, m := range msgs {
 		if w := uint64(i + 2); m.To != w {
 			t.Errorf("to = %d, want %d", m.To, w)
@@ -891,6 +893,7 @@ func (s messageSlice) Len() int           { return len(s) }
 func (s messageSlice) Less(i, j int) bool { return fmt.Sprint(s[i]) < fmt.Sprint(s[j]) }
 func (s messageSlice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
+// 仅能 leader 提交 noopentyr
 func commitNoopEntry(r *Raft, s *MemoryStorage) {
 	if r.State != StateLeader {
 		panic("it should only be used when it is the leader")

@@ -18,14 +18,18 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"strconv"
+	"sort"
 
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
+const (
+	DenyVoteIDOffset = 10000
+)
 
 // StateType represents the role of a node in a cluster.
 type StateType uint64
@@ -204,12 +208,40 @@ func newRaft(c *Config) *Raft {
 	lastIndex, _ := c.Storage.LastIndex() // 用 偏移算出来的 可能比 tmp_raft.RaftLog.LastIndex() 准确一些
 	for _, id := range c.peers {
 		tmp_raft.votes[id] = false
+		tmp_raft.votes[id+DenyVoteIDOffset] = false
 		tmp_raft.Prs[id] = &Progress{
 			Match: hardState.Commit, // 注意  match 是 共识 的，而不是 已经 应用的
 			Next:  lastIndex + 1,
 		}
 	}
 	return &tmp_raft
+}
+
+func (r *Raft) sendSnapshot(to uint64) {
+	if _, ok := r.Prs[to]; !ok {
+		return
+	}
+	var snapshot pb.Snapshot
+	var err error = nil
+	if IsEmptySnap(r.RaftLog.pendingSnapshot) {
+		snapshot, err = r.RaftLog.storage.Snapshot()
+	} else {
+		snapshot = *r.RaftLog.pendingSnapshot
+	}
+	if err != nil {
+		return
+	}
+	msg := pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		Snapshot: &snapshot,
+	}
+	r.msgs = append(r.msgs, msg)
+	// TODO ??????这里更改next?
+	r.Prs[to].Next = snapshot.Metadata.Index + 1
+	return
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -220,56 +252,31 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if _, ok := r.Prs[to]; !ok {
 		return false
 	}
-	// TODO 进一步验证
-	// 需要的条目索引小于存储范围
-	if r.Prs[to].Next < r.RaftLog.entries[0].Index {
-		// 快照不一致，导致 RaftLog 超出范围，
-		snapshot, err := r.RaftLog.storage.Snapshot()
-		if err != nil {
-			log.Infof("snapshot not ready")
-			return false
-		}
-		r.msgs = append(r.msgs, pb.Message{
-			MsgType:  pb.MessageType_MsgSnapshot,
-			To:       to,
-			From:     r.id,
-			Term:     r.Term,
-			Commit:   r.RaftLog.committed,
-			Snapshot: &snapshot,
-		})
+	prevIndex := r.Prs[to].Next - 1
+	firstIndex := r.RaftLog.entries[0].Index
+
+	//println(r.id, "send prevIndex:", prevIndex, "firstIndex:", r.RaftLog.FirstIndex())
+
+	prevLogTerm, err := r.RaftLog.Term(prevIndex)
+	if err != nil || prevIndex < firstIndex-1 {
+		r.sendSnapshot(to)
 		return true
 	}
-
-	// TODO 需要的条目索引大于存储范围  进一步验证
-	if r.Prs[to].Next > r.RaftLog.LastIndex() {
-		return false
+	var entries []*pb.Entry
+	for i := prevIndex + 1; i <= r.RaftLog.LastIndex(); i++ {
+		entries = append(entries, &r.RaftLog.entries[i-firstIndex])
 	}
-	// TODO 为什么是上一个条目的日志和索引
-	arrayIndex := r.Prs[to].Next - r.RaftLog.entries[0].Index
-	var prevLogIndex, prevLogTerm uint64
-	if arrayIndex == 0 { // 期待 第 0 号元素
-		prevLogIndex = 0
-		prevLogTerm = 0
-	} else {
-		prevLogIndex = uint64(int(r.RaftLog.entries[arrayIndex-1].Index))
-		prevLogTerm, _ = r.RaftLog.Term(prevLogIndex)
-	}
-	appendEntries := []*pb.Entry{}
-	// 发送 从数组下标开始到末尾的所有 条目
-	for int(arrayIndex) < len(r.RaftLog.entries) {
-		appendEntries = append(appendEntries, &r.RaftLog.entries[arrayIndex])
-		arrayIndex++
-	}
-	r.msgs = append(r.msgs, pb.Message{
+	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
-		To:      to,
 		From:    r.id,
+		To:      to,
 		Term:    r.Term,
-		LogTerm: prevLogTerm,
-		Index:   prevLogIndex,
-		Entries: appendEntries,
 		Commit:  r.RaftLog.committed,
-	})
+		LogTerm: prevLogTerm,
+		Index:   prevIndex,
+		Entries: entries,
+	}
+	r.msgs = append(r.msgs, msg)
 	return true
 }
 
@@ -357,6 +364,7 @@ func (r *Raft) becomeCandidate() {
 			continue
 		}
 		r.votes[id] = false
+		r.votes[id+DenyVoteIDOffset] = false
 	}
 	r.Vote = r.id        // 当场给自己投票
 	r.votes[r.id] = true // 自己给自己投票
@@ -366,8 +374,15 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
-	r.Lead = r.id
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
 	r.State = StateLeader
+	r.heartbeatElapsed = 0
+	r.electionElapsed = 0 - rand.Intn(r.electionTimeout)
+	r.leadTransferee = None
+	r.Lead = r.id
+
 	// for id := range r.votes {
 	// 	r.votes[id] = false			// 不需要，只有 候选者 需要用这个进行统计，但是候选者自己会清空
 	// }
@@ -530,7 +545,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 	//r.Prs[r.id].Match = lastIndex
 	//r.Prs[r.id].Next = lastIndex + 1
-	log.Infof("Handle Proposal %s, %s", r.String(), m.String())
+	// log.Infof("Handle Proposal %s, %s", r.String(), m.String())
 	for peer, _ := range r.Prs {
 		if peer == r.id {
 			continue
@@ -638,9 +653,9 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		requestVoteResponse.LogTerm = lastEntryTerm
 		requestVoteResponse.Index = lastEntryIndex
 	}
-	if requestVoteResponse.Reject == false {
-		r.Lead = r.Vote
-	}
+	// if requestVoteResponse.Reject == false {
+	// 	r.Lead = r.Vote
+	// }
 	r.msgs = append(r.msgs, requestVoteResponse)
 }
 
@@ -653,34 +668,44 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	}
 	if m.Reject {
 		r.votes[m.From] = false
-		// r.votes[m.From+DenyVoteIDOffset] = true
+		r.votes[m.From+DenyVoteIDOffset] = true
 	} else {
 		r.votes[m.From] = true
 	}
 	voteCnt := 0
-	// denyCnt := 0
+	denyCnt := 0
 	totalCnt := len(r.Prs)
 	for id, _ := range r.Prs {
 		if r.votes[id] {
 			voteCnt++
+		} else if r.votes[id+DenyVoteIDOffset] {
+			denyCnt++
 		}
-		// else if r.votes[id+DenyVoteIDOffset] {
-		// 	denyCnt++
-		// }
 	}
 	if voteCnt*2 > totalCnt && r.State != StateLeader {
 		r.becomeLeader()
 	}
-	// if denyCnt*2 > totalCnt {
-	// 	r.State = StateFollower
-	// 	r.Vote = 0
-	// }
+	if denyCnt*2 > totalCnt {
+		r.State = StateFollower
+		r.Vote = 0
+	}
+}
+func (r *Raft) sendAppendResponse(to uint64, reject bool, index uint64) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Reject:  reject,
+		Index:   index,
+	}
+	r.msgs = append(r.msgs, msg)
+	return
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	log.Infof("lint: %d\n", len(r.RaftLog.entries))
 	if r.Term <= m.Term {
 		if r.id != m.From {
 			r.becomeFollower(m.Term, m.From)
@@ -690,162 +715,121 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				r.Vote = 0
 			}
 		}
-	} else {
-		log.Infof("weishenme \n")
+	}
+	if len(r.Prs) == 0 && r.RaftLog.LastIndex() < meta.RaftInitLogIndex {
+		r.sendAppendResponse(m.From, true, r.RaftLog.LastIndex())
 		return
 	}
-	r.Lead = m.From
-	rsp := pb.Message{
-		MsgType: pb.MessageType_MsgAppendResponse,
-		To:      m.From,
-		From:    m.To,
-		Term:    r.Term,
-		Reject:  true,
-	}
-	offset := 0
-	// log.Infof("%d %d %d %d %d", len(r.RaftLog.entries), r.RaftLog.stabled, r.RaftLog.applied, r.RaftLog.committed, m.Index)
-	/*if len(r.RaftLog.entries) == 0 && r.RaftLog.applied > 0 &&  {
-		//
-		log.Infof("peerid=%d is newly added node", r.id)
-		rsp.Reject = false
-		rsp.Index = 0
-		r.msgs = append(r.msgs, rsp)
+	if m.Term < r.Term {
+		r.sendAppendResponse(m.From, true, meta.RaftInitLogIndex+1)
 		return
-	}*/
-	if m.Index != 0 || m.LogTerm != 0 {
-		localPrevLogTerm, err := r.RaftLog.Term(m.Index)
-		if err != nil || (m.LogTerm != localPrevLogTerm) {
-			r.msgs = append(r.msgs, rsp)
+	}
+	// flash the state
+	if m.Term > r.Term {
+		r.Term = m.Term
+	}
+	if m.From != r.Lead {
+		r.Lead = m.From
+	}
+
+	// Reply reject if doesn’t contain entry at prevLogIndex term matches prevLogTerm
+	lastIndex := r.RaftLog.LastIndex()
+	if m.Index <= lastIndex {
+		LogTerm, err := r.RaftLog.Term(m.Index)
+		//println("m.LogTerm:", m.LogTerm, "LogTerm:", LogTerm)
+		if err != nil && err == ErrCompacted {
+			r.Vote = None
+			r.sendAppendResponse(m.From, false, r.RaftLog.LastIndex())
 			return
 		}
-		prevLogArrayIndex := int(m.Index - r.RaftLog.entries[0].Index)
-		offset = prevLogArrayIndex + 1
-	}
-	idx := 0
-	// TODO 搞清楚！
-	oldEntries := make([]pb.Entry, len(r.RaftLog.entries))
-	copy(oldEntries, r.RaftLog.entries)
-	isConfilict := false
-	for offset+idx < len(r.RaftLog.entries) && idx < len(m.Entries) {
-		if r.RaftLog.entries[offset+idx].Index != (*m.Entries[idx]).Index ||
-			r.RaftLog.entries[offset+idx].Term != (*m.Entries[idx]).Term ||
-			string(r.RaftLog.entries[offset+idx].Data) != string((*m.Entries[idx]).Data) {
-			isConfilict = true
-		}
-		r.RaftLog.entries[offset+idx] = *m.Entries[idx]
-		idx++
-	}
-	for idx < len(m.Entries) {
-		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[idx])
-		idx++
-	}
-	for offset+idx < len(r.RaftLog.entries) {
-		if isConfilict {
-			r.RaftLog.entries = r.RaftLog.entries[:offset+idx]
-			break
-		}
-		if offset+idx >= 1 && (r.RaftLog.entries[offset+idx].Term < r.RaftLog.entries[offset+idx-1].Term ||
-			r.RaftLog.entries[offset+idx].Index <= r.RaftLog.entries[offset+idx-1].Index) {
-			r.RaftLog.entries = r.RaftLog.entries[:offset+idx]
-			break
-		}
-		idx++
-	}
-	idx = 0
 
-	debugStr := strconv.Itoa(int(r.id)) + " oldEntry: "
-	for i := 0; i < len(oldEntries); i++ {
-		debugStr += strconv.FormatUint(oldEntries[i].Index, 10) + " "
-	}
-	//log.Infof(debugStr)
-
-	debugStr = strconv.Itoa(int(r.id)) + " newEntry: "
-	for i := 0; i < len(r.RaftLog.entries); i++ {
-		debugStr += strconv.FormatUint(r.RaftLog.entries[i].Index, 10) + " "
-	}
-	//log.Infof(debugStr)
-
-	for idx < len(oldEntries) && idx < len(r.RaftLog.entries) {
-		if oldEntries[idx].Index != r.RaftLog.entries[idx].Index ||
-			oldEntries[idx].Term != r.RaftLog.entries[idx].Term {
-			//log.Infof("peerid=%d set stabled from %d to %d", r.id, r.RaftLog.stabled, min(r.RaftLog.stabled, oldEntries[idx].Index-1))
-			tmpStabled := r.RaftLog.stabled
-			r.RaftLog.stabled = min(r.RaftLog.stabled, oldEntries[idx].Index-1)
-			if r.RaftLog.stabled+1 < r.RaftLog.entries[0].Index {
-				r.RaftLog.stabled = tmpStabled
-				rsp.Reject = true
-				r.RaftLog.entries = make([]pb.Entry, len(oldEntries))
-				copy(r.RaftLog.entries, oldEntries)
-				r.msgs = append(r.msgs, rsp)
-				return
+		if m.LogTerm == LogTerm || m.LogTerm == 0 {
+			// If an existing entry conflicts with a new one (same index but different terms),
+			// delete the existing entry and all that follow it
+			for i, entry := range m.Entries {
+				var Term uint64
+				entry.Index = m.Index + uint64(i) + 1
+				if entry.Index <= lastIndex {
+					Term, _ = r.RaftLog.Term(entry.Index)
+					if Term != entry.Term {
+						firstIndex := r.RaftLog.entries[0].Index
+						if len(r.RaftLog.entries) != 0 && int64(m.Index-firstIndex+1) >= 0 {
+							r.RaftLog.entries = r.RaftLog.entries[0 : m.Index-firstIndex+1]
+						}
+						lastIndex = r.RaftLog.LastIndex()
+						r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+						r.RaftLog.stabled = m.Index
+					}
+				} else {
+					r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+				}
 			}
-			//}
-			break
+
+			// send true AppendResponse
+			r.Vote = None
+			r.sendAppendResponse(m.From, false, r.RaftLog.LastIndex())
+			// set committed
+			if m.Commit > r.RaftLog.committed {
+				committed := min(m.Commit, m.Index+uint64(len(m.Entries)))
+				r.RaftLog.committed = min(committed, r.RaftLog.LastIndex())
+			}
+			return
 		}
-		idx++
 	}
-	rsp.Reject = false
-	rsp.Index = r.RaftLog.LastIndex()
-	r.msgs = append(r.msgs, rsp)
-	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
-		r.RaftLog.committed = min(r.RaftLog.committed, m.Index+uint64(len(m.Entries)))
-		r.RaftLog.committed = max(r.RaftLog.committed, r.RaftLog.applied)
-	}
-}
+	// return reject AppendResponse
+	index := max(lastIndex+1, meta.RaftInitLogIndex+1)
+	r.sendAppendResponse(m.From, true, index)
+	return
+} // new
 
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	// Your Code Here (2A).
+	if m.Reject && m.Index < meta.RaftInitLogIndex {
+		r.sendSnapshot(m.From)
+		return
+	}
 	if r.Term < m.Term {
-		// becomeFollow
+		// 需要重新选举 但是 现在还不是投票的时候(requestVote)
 		r.State = StateFollower
 		r.Vote = 0
 		return
 	}
 	if m.Reject {
-		r.Prs[m.From].Next--
+		r.Prs[m.From].Next = min(m.Index, r.Prs[m.From].Next-1)
 		r.sendAppend(m.From)
 		return
-	} else {
-		r.Prs[m.From].Next = m.Index + 1
-		r.Prs[m.From].Match = m.Index
 	}
-	N := r.RaftLog.LastIndex()
-	// log.Error(N, r.RaftLog.entries)
-	for N >= r.RaftLog.committed+1 {
-		numMatched := 0
-		for _, progres := range r.Prs {
-			if progres.Match >= N {
-				numMatched++
+	r.Prs[m.From].Next = m.Index + 1
+	r.Prs[m.From].Match = m.Index
+	// TODO:check if can TransferLeader
+	if m.From == r.leadTransferee {
+		r.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: m.From})
+	}
+	match := make(uint64Slice, len(r.Prs))
+	i := 0
+	for _, prs := range r.Prs {
+		match[i] = prs.Match
+		i++
+	}
+	sort.Sort(match)
+	Match := match[(len(r.Prs)-1)/2]
+	matchTerm, _ := r.RaftLog.Term(Match)
+	// println("match:", Match, "r.RaftLog.committed:", r.RaftLog.committed)
+	// Raft 永远不会通过计算副本数目的方式去提交一个之前任期内的日志条目
+	if m.From == 3 {
+		log.Infof("peerid=%d, msgs=%+v\n", r.id, m)
+	}
+	if Match > r.RaftLog.committed && matchTerm == r.Term {
+		// 此时的 Match 就是当前 Term 最新的共识。
+		r.RaftLog.committed = Match
+		log.Infof("peerid=%d, msgs=%+v\n", r.id, m)
+		for peer := range r.Prs {
+			if peer != r.id {
+				r.sendAppend(peer)
 			}
 		}
-		term, err := r.RaftLog.Term(N)
-		if err != nil {
-			return
-		}
-		if numMatched*2 > len(r.Prs) && r.Term == term {
-			if r.RaftLog.committed != N {
-				r.RaftLog.committed = N
-				for peer, _ := range r.Prs {
-					if peer == r.id {
-						continue
-					}
-					/*r.msgs = append(r.msgs, pb.Message{
-						MsgType: pb.MessageType_MsgAppend,
-						To:      peer,
-						From:    r.id,
-						Term:    r.Term,
-						//Commit:  r.RaftLog.committed,
-						Commit: min(r.RaftLog.committed, r.Prs[peer].Match),
-					})*/
-					r.sendAppend(peer)
-				}
-			}
-			break
-		}
-		N--
 	}
-	//log.Errorf("%d %d %d", r.leadTransferee, r.Prs[m.From].Match, r.RaftLog.LastIndex())
+	// TODO:log.Errorf("%d %d %d", r.leadTransferee, r.Prs[m.From].Match, r.RaftLog.LastIndex())
 	if r.leadTransferee != 0 && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
 		log.Infof("peerid=%d, sendAppend to leaderTransferee=%d", r.id, r.leadTransferee)
 		r.msgs = append(r.msgs, pb.Message{
@@ -856,6 +840,8 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		})
 		// r.leadTransferee = 0
 	}
+	return
+
 }
 
 // handleSnapshot handle Snapshot RPC request
