@@ -18,6 +18,10 @@ import (
 	"errors"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+
+	//"github.com/pingcap/log"
+	"github.com/pingcap-incubator/tinykv/log"
+	"go.uber.org/atomic"
 )
 
 // ErrStepLocalMsg is returned when try to step a local raft message
@@ -31,6 +35,13 @@ var ErrStepPeerNotFound = errors.New("raft: cannot step as peer not found")
 type SoftState struct {
 	Lead      uint64
 	RaftState StateType
+}
+
+func (ss *SoftState) compareSoftState(state *SoftState) bool {
+	if ss.Lead != state.Lead || ss.RaftState != state.RaftState {
+		return false
+	}
+	return true
 }
 
 // Ready encapsulates the entries and messages that are ready to read,
@@ -70,12 +81,31 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	softState *SoftState
+	hardState *pb.HardState
+	snapshot  *pb.Snapshot
+	readble   atomic.Bool
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	ret := &RawNode{
+		Raft: newRaft(config),
+		softState: &SoftState{
+			Lead:      0,
+			RaftState: StateFollower,
+		},
+	}
+	ret.hardState = &pb.HardState{
+		Term:   ret.Raft.Term,
+		Vote:   ret.Raft.Vote,
+		Commit: ret.Raft.RaftLog.committed,
+	}
+	ret.snapshot = &pb.Snapshot{
+		Metadata: &pb.SnapshotMetadata{},
+	}
+	return ret, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,7 +173,54 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	ret := Ready{
+		SoftState: &SoftState{
+			Lead:      rn.Raft.Lead,
+			RaftState: rn.Raft.State,
+		},
+		HardState: pb.HardState{
+			Term:   rn.Raft.Term,
+			Vote:   rn.Raft.Vote,
+			Commit: rn.Raft.RaftLog.committed,
+		},
+		Entries:          rn.Raft.RaftLog.unstableEntries(),
+		Snapshot:         pb.Snapshot{},
+		CommittedEntries: nil,
+		Messages:         nil,
+	}
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		//log.Info("peerid=%d pending snap ready", rn.Raft.id)
+		if rn.snapshot != nil && rn.Raft.RaftLog.pendingSnapshot.Metadata.Index != rn.snapshot.Metadata.Index {
+			log.Info("peerid=%d rawnode snap ready", rn.Raft.id)
+			rn.snapshot = rn.Raft.RaftLog.pendingSnapshot
+			ret.Snapshot = *rn.snapshot
+		} else {
+			log.Info("peerid=%d recviced repeated snap", rn.Raft.id)
+			rn.Raft.RaftLog.pendingSnapshot = nil
+		}
+		return ret
+	}
+	if rn.softState.compareSoftState(ret.SoftState) {
+		ret.SoftState = nil
+	}
+	if rn.hardState.Term == ret.HardState.Term &&
+		rn.hardState.Vote == ret.HardState.Vote &&
+		rn.hardState.Commit == ret.HardState.Commit {
+		ret.HardState = pb.HardState{
+			Term:   0,
+			Vote:   0,
+			Commit: 0,
+		}
+	}
+
+	if len(rn.Raft.RaftLog.allEntries()) != 0 {
+		// log.Infof("peerid=%d, commitid=%d, applied=%d", rn.Raft.id, rn.Raft.RaftLog.committed, rn.Raft.RaftLog.applied)
+		ret.CommittedEntries = rn.Raft.RaftLog.entries[(rn.Raft.RaftLog.applied-rn.Raft.RaftLog.entries[0].Index)+1 : (rn.Raft.RaftLog.committed-rn.Raft.RaftLog.entries[0].Index)+1]
+	}
+	if len(rn.Raft.msgs) != 0 {
+		ret.Messages = rn.Raft.msgs
+	}
+	return ret
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
@@ -156,6 +233,23 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	if rd.Snapshot.Metadata != nil {
+		log.Infof("peerid=%d advance snapshot", rn.Raft.id)
+		rn.Raft.RaftLog.pendingSnapshot = nil
+		//rn.Raft.RaftLog.stabled = max(rd.Snapshot.Metadata.Index, rn.Raft.RaftLog.stabled)
+		// rn.Raft.RaftLog.entries = rn.Raft.RaftLog.entries[:0]
+		return
+	}
+	if len(rd.Entries) > 0 {
+		// log.Infof("peerid=%d set stabled from %d to %d", rn.Raft.id, rn.Raft.RaftLog.stabled, rd.Entries[len(rd.Entries)-1].Index)
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+	if len(rn.Raft.msgs) != 0 {
+		rn.Raft.msgs = rn.Raft.msgs[:0]
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this

@@ -875,3 +875,15 @@ func (r *Raft) String() string {
 	return fmt.Sprintf("RaftState:{peerid: %d Term: %d Vote: %d commited: %d State: %s}",
 		r.id, r.Term, r.Vote, r.RaftLog.committed, r.State.String())
 }
+
+func (r *Raft) softState() *SoftState {
+	return &SoftState{Lead: r.Lead, RaftState: r.State}
+}
+
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+}

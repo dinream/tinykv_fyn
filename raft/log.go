@@ -86,6 +86,7 @@ func newLog(storage Storage) *RaftLog {
 		log.Fatal(err)
 		return nil
 	}
+	hardState, _, _ := storage.InitialState()
 	// 获取这个范围内的条目，即 storage 中全部的
 	initEntries, err := storage.Entries(firstIdx, lastIdx+1)
 	if err != nil {
@@ -94,6 +95,8 @@ func newLog(storage Storage) *RaftLog {
 	}
 	tmp_Rlog.entries = append(tmp_Rlog.entries, initEntries...)
 	tmp_Rlog.stabled = lastIdx // 存储中 读到的 最后一个有效的索引 就是 stable 的。
+	tmp_Rlog.committed = hardState.Commit
+	tmp_Rlog.applied = firstIdx - 1
 	return tmp_Rlog
 }
 
@@ -122,7 +125,6 @@ func (l *RaftLog) allEntries() []pb.Entry {
 		// if ent.Data != nil { // 如果 这里的 ent 的 Data 是空的,说明 entry 无效
 		// }
 		ret = append(ret, ent)
-
 	}
 	return ret
 }
@@ -153,7 +155,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return []pb.Entry{}
+		return nil
 	}
 	if l.committed < l.applied {
 		log.Infof("committed:%d > applied:%d \n", l.committed, l.applied)
@@ -180,10 +182,8 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) FirstIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		if l.pendingSnapshot != nil {
-			return l.pendingSnapshot.Metadata.Index
-		}
-		return 0
+		i, _ := l.storage.FirstIndex()
+		return i - 1
 	}
 	return l.entries[0].Index
 }
