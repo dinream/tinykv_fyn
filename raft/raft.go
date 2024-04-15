@@ -578,7 +578,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.Vote = 0
 	if m.Commit >= r.RaftLog.committed {
 		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
-		r.RaftLog.committed = max(r.RaftLog.committed, r.RaftLog.applied)
+		//r.RaftLog.committed = max(r.RaftLog.committed, r.RaftLog.applied)
 	}
 	r.msgs = append(r.msgs, rsp)
 }
@@ -770,8 +770,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			r.sendAppendResponse(m.From, false, r.RaftLog.LastIndex())
 			// set committed
 			if m.Commit > r.RaftLog.committed {
-				committed := min(m.Commit, m.Index+uint64(len(m.Entries)))
-				r.RaftLog.committed = min(committed, r.RaftLog.LastIndex())
+				r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
+				// r.RaftLog.committed = min(committed, r.RaftLog.LastIndex() )
 			}
 			return
 		}
@@ -816,9 +816,6 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	matchTerm, _ := r.RaftLog.Term(Match)
 	// println("match:", Match, "r.RaftLog.committed:", r.RaftLog.committed)
 	// Raft 永远不会通过计算副本数目的方式去提交一个之前任期内的日志条目
-	if m.From == 3 {
-		log.Infof("peerid=%d, msgs=%+v\n", r.id, m)
-	}
 	if Match > r.RaftLog.committed && matchTerm == r.Term {
 		// 此时的 Match 就是当前 Term 最新的共识。
 		r.RaftLog.committed = Match
@@ -872,7 +869,7 @@ func (r *Raft) handleTimeoutNow() {
 }
 
 func (r *Raft) String() string {
-	return fmt.Sprintf("RaftState:{peerid: %d Term: %d Vote: %d commited: %d State: %s}",
+	return fmt.Sprintf("RaftState:{peerid: %d Term: %d Vote: %d committed: %d State: %s}",
 		r.id, r.Term, r.Vote, r.RaftLog.committed, r.State.String())
 }
 
