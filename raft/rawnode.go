@@ -44,9 +44,9 @@ func (ss *SoftState) compareSoftState(state *SoftState) bool {
 	return true
 }
 
-// Ready encapsulates the entries and messages that are ready to read,
-// be saved to stable storage, committed or sent to other peers.
-// All fields in Ready are read-only.
+// Ready encapsulates the entries and messages that are ready to read, Ready封装了准备读取的条目和消息，
+// be saved to stable storage, committed or sent to other peers.	保存到稳定存储、提交或发送给其他对等点。
+// All fields in Ready are read-only.	所有字段都是只读的。
 type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
@@ -83,7 +83,7 @@ type RawNode struct {
 	// Your Data Here (2A).
 	softState *SoftState
 	hardState *pb.HardState
-	snapshot  *pb.Snapshot
+	snapshot  *pb.Snapshot // TODO 可能是临时（未永久存储的）快照？
 	readble   atomic.Bool
 }
 
@@ -102,6 +102,7 @@ func NewRawNode(config *Config) (*RawNode, error) {
 		Vote:   ret.Raft.Vote,
 		Commit: ret.Raft.RaftLog.committed,
 	}
+	// TODO 快照初始为空？
 	ret.snapshot = &pb.Snapshot{
 		Metadata: &pb.SnapshotMetadata{},
 	}
@@ -131,7 +132,7 @@ func (rn *RawNode) Propose(data []byte) error {
 
 // ProposeConfChange proposes a config change.
 func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
-	data, err := cc.Marshal()
+	data, err := cc.Marshal() // 结构化为字节数组
 	if err != nil {
 		return err
 	}
@@ -143,6 +144,7 @@ func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
 }
 
 // ApplyConfChange applies a config change to the local node.
+// 返回处理后的 nodes 数组
 func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 	if cc.NodeId == None {
 		return &pb.ConfState{Nodes: nodes(rn.Raft)}
@@ -162,15 +164,16 @@ func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 func (rn *RawNode) Step(m pb.Message) error {
 	// ignore unexpected local messages receiving over network
 	if IsLocalMsg(m.MsgType) {
-		return ErrStepLocalMsg
+		return ErrStepLocalMsg // 本地的消息会在 Raft 层面自动调用 Step 推进
 	}
-	if pr := rn.Raft.Prs[m.From]; pr != nil || !IsResponseMsg(m.MsgType) {
+	if pr := rn.Raft.Prs[m.From]; pr != nil || !IsResponseMsg(m.MsgType) { // 注意这里的判断条件：要么对此节点有记录，要么这个消息不是回应类型的消息。
 		return rn.Raft.Step(m)
 	}
 	return ErrStepPeerNotFound
 }
 
-// Ready returns the current point-in-time state of this RawNode.
+// Ready returns the current point-in-time state of this RawNode. Ready 返回此 RawNode 的当前时间点状态。
+// Ready 获取当前节点相对于永久存储的进度
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	ret := Ready{
@@ -200,20 +203,20 @@ func (rn *RawNode) Ready() Ready {
 		}
 		return ret
 	}
-	if rn.softState.compareSoftState(ret.SoftState) {
+	if rn.softState.compareSoftState(ret.SoftState) { // 如果 Ready 的过程中发现 rn.softState 已经就是 rn.Raft.Lead 和 rn.Raft.State，软状态没更新。
 		ret.SoftState = nil
 	}
 	if rn.hardState.Term == ret.HardState.Term &&
 		rn.hardState.Vote == ret.HardState.Vote &&
 		rn.hardState.Commit == ret.HardState.Commit {
-		ret.HardState = pb.HardState{
+		ret.HardState = pb.HardState{ // 硬状态没更新
 			Term:   0,
 			Vote:   0,
 			Commit: 0,
 		}
 	}
 
-	if len(rn.Raft.RaftLog.allEntries()) != 0 {
+	if len(rn.Raft.RaftLog.allEntries()) != 0 { // 计算待提交的 entry
 		// log.Infof("peerid=%d, commitid=%d, applied=%d", rn.Raft.id, rn.Raft.RaftLog.committed, rn.Raft.RaftLog.applied)
 		ret.CommittedEntries = rn.Raft.RaftLog.entries[(rn.Raft.RaftLog.applied-rn.Raft.RaftLog.entries[0].Index)+1 : (rn.Raft.RaftLog.committed-rn.Raft.RaftLog.entries[0].Index)+1]
 	}

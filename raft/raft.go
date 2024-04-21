@@ -87,7 +87,6 @@ type Config struct {
 	// Applied. If Applied is unset when restarting, raft might return previous
 	// applied entries. This is a very application dependent configuration.
 	/**Applied 是最后应用的索引。 仅应在重新启动 raft 时设置。 raft 不会将小于或等于 Applied 的条目返回到应用程序。 如果重新启动时未设置 Applied，则 raft 可能会返回之前应用的条目。 这是一个非常依赖于应用程序的配置。*/
-	// TODO 什么东西
 	Applied uint64
 }
 
@@ -281,7 +280,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
-// TODO Leader 给 follower ？
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
 	r.msgs = append(r.msgs, pb.Message{
@@ -289,7 +287,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		MsgType: pb.MessageType_MsgHeartbeat,
 		Term:    r.Term,
-		Commit:  min(r.RaftLog.committed, r.Prs[to].Match), // 确保了心跳消息中的 Commit 字段不会超过已经在目标节点上提交的日志索引，避免了不必要的信息重复传输
+		Commit:  min(r.RaftLog.committed, r.Prs[to].Match), // TODO 确保了心跳消息中的 Commit 字段不会超过已经在目标节点上提交的日志索引，避免了不必要的信息重复传输
 	})
 }
 
@@ -490,7 +488,7 @@ func (r *Raft) Step(m pb.Message) error {
 	return nil
 }
 
-// TODO 这里的 时间变化
+// TODO 这里的 时间变化 ; 判断是否进行 region 判断
 func (r *Raft) handleHup() {
 	r.electionElapsed = -1 * (rand.Int() % r.electionTimeout)
 	r.electionElapsed -= r.delayElectionTimeout
@@ -538,7 +536,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 	}
 	for i, entry := range m.Entries {
 		entry.Index = lastIndex + uint64(i) + 1
-		entry.Term = r.Term
+		entry.Term = r.Term // 注意对于  propose 的新的消息，给它一个当前 Term，因为 propose 的 term 一定是最新的。
 		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 	}
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
@@ -775,6 +773,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			}
 			return
 		}
+		// TODO 这里是否还有一个 true
 	}
 	// return reject AppendResponse
 	index := max(lastIndex+1, meta.RaftInitLogIndex+1)
