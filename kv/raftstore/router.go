@@ -14,14 +14,14 @@ import (
 // peerState contains the peer states that needs to run raft command and apply command.
 type peerState struct {
 	closed uint32
-	peer   *peer
+	peer   *peer //
 }
 
-// router routes a message to a peer.
+// router routes a message to a peer. 这里将消息路由给一个 peer
 type router struct {
-	peers       sync.Map // regionID -> peerState
-	peerSender  chan message.Msg
-	storeSender chan<- message.Msg
+	peers       sync.Map           // regionID -> peerState
+	peerSender  chan message.Msg   // 双向通道
+	storeSender chan<- message.Msg // 单向通道
 }
 
 func newRouter(storeSender chan<- message.Msg) *router {

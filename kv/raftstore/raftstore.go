@@ -29,6 +29,7 @@ type regionItem struct {
 }
 
 // Less returns true if the region start key is less than the other.
+// 判断一个区域的起始键是否小于另一个区域的
 func (r *regionItem) Less(other btree.Item) bool {
 	left := r.region.GetStartKey()
 	right := other.(*regionItem).region.GetStartKey()
@@ -104,8 +105,10 @@ type Transport interface {
 	Send(msg *rspb.RaftMessage) error
 }
 
-/// loadPeers loads peers in this store. It scans the db engine, loads all regions and their peers from it
-/// WARN: This store should not be used before initialized.
+// 用于从存储引擎中扫描并加载已保存的区域和它们的对等节点
+// 它首先通过扫描区域元数据（region meta）获取保存的区域列表，然后根据每个区域的状态创建对应的对等节点。在加载过程中，它还会清除已被标记为 "Tombstone" 状态的区域元数据，以及相应的存储引擎数据。
+// / loadPeers loads peers in this store. It scans the db engine, loads all regions and their peers from it
+// / WARN: This store should not be used before initialized.
 func (bs *Raftstore) loadPeers() ([]*peer, error) {
 	// Scan region meta to get saved regions.
 	startKey := meta.RegionMetaMinKey
@@ -176,6 +179,7 @@ func (bs *Raftstore) loadPeers() ([]*peer, error) {
 	return regionPeers, nil
 }
 
+// 清除过期的区域元数据
 func (bs *Raftstore) clearStaleMeta(kvWB, raftWB *engine_util.WriteBatch, originState *rspb.RegionLocalState) {
 	region := originState.Region
 	raftState, err := meta.GetRaftLocalState(bs.ctx.engine.Raft, region.Id)
@@ -210,6 +214,10 @@ type Raftstore struct {
 	wg         *sync.WaitGroup
 }
 
+// 启动 Raftstore 的入口函数。
+// 在函数内部，它首先进行配置验证和快照管理器的初始化。
+// 然后，它创建了一组工作线程（workers）来处理不同类型的任务，如分裂检查（split check）、区域快照（snapshot）、Raft 日志垃圾回收（raft log GC）和调度器（scheduler）。
+// 接下来，它加载已保存的区域信息并注册相应的对等节点，并启动工作线程。
 func (bs *Raftstore) start(
 	meta *metapb.Store,
 	cfg *config.Config,
@@ -261,6 +269,9 @@ func (bs *Raftstore) start(
 	return nil
 }
 
+// 启动 Raftstore 的工作线程。
+// 它接收一组对等节点（peers），并创建并启动 RaftWorker 和 StoreWorker。然后，它向路由器（router）发送存储启动消息和区域启动消息，以及启动分裂检查和区域任务处理的工作线程。
+// 同时，它也启动了一个定时驱动器（tickDriver）的协程。
 func (bs *Raftstore) startWorkers(peers []*peer) {
 	ctx := bs.ctx
 	workers := bs.workers
@@ -284,6 +295,9 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 	go bs.tickDriver.run()
 }
 
+// 用于关闭 Raftstore。它通过关闭 closeCh 信道来触发关闭过程。
+// 在关闭过程中，它等待所有工作线程的完成，并停止分裂检查、区域任务处理、Raft 日志垃圾回收和调度器的工作线程。
+// 最后，它停止定时驱动器的协程。
 func (bs *Raftstore) shutDown() {
 	close(bs.closeCh)
 	bs.wg.Wait()

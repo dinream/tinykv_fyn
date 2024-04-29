@@ -20,7 +20,7 @@ import (
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 
 	//"github.com/pingcap/log"
-	"github.com/pingcap-incubator/tinykv/log"
+
 	"go.uber.org/atomic"
 )
 
@@ -77,12 +77,12 @@ type Ready struct {
 	Messages []pb.Message
 }
 
-// RawNode is a wrapper of Raft.
+// RawNode is a wrapper of Raft. 原始节点，对 Raft 的封装
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
 	softState *SoftState
-	hardState *pb.HardState
+	hardState pb.HardState
 	snapshot  *pb.Snapshot // TODO 可能是临时（未永久存储的）快照？
 	readble   atomic.Bool
 }
@@ -90,18 +90,13 @@ type RawNode struct {
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
+	raft := newRaft(config)
 	ret := &RawNode{
-		Raft: newRaft(config),
-		softState: &SoftState{
-			Lead:      0,
-			RaftState: StateFollower,
-		},
+		Raft:      raft,
+		softState: raft.softState(),
+		hardState: raft.hardState(),
 	}
-	ret.hardState = &pb.HardState{
-		Term:   ret.Raft.Term,
-		Vote:   ret.Raft.Vote,
-		Commit: ret.Raft.RaftLog.committed,
-	}
+
 	// TODO 快照初始为空？
 	ret.snapshot = &pb.Snapshot{
 		Metadata: &pb.SnapshotMetadata{},
@@ -176,59 +171,63 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready 获取当前节点相对于永久存储的进度
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	ret := Ready{
-		SoftState: &SoftState{
-			Lead:      rn.Raft.Lead,
-			RaftState: rn.Raft.State,
-		},
-		HardState: pb.HardState{
-			Term:   rn.Raft.Term,
-			Vote:   rn.Raft.Vote,
-			Commit: rn.Raft.RaftLog.committed,
-		},
+	ready := Ready{
+		SoftState:        nil,
+		HardState:        pb.HardState{},
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		Snapshot:         pb.Snapshot{},
-		CommittedEntries: nil,
-		Messages:         nil,
-	}
-	if rn.Raft.RaftLog.pendingSnapshot != nil {
-		//log.Info("peerid=%d pending snap ready", rn.Raft.id)
-		if rn.snapshot != nil && rn.Raft.RaftLog.pendingSnapshot.Metadata.Index != rn.snapshot.Metadata.Index {
-			log.Info("peerid=%d rawnode snap ready", rn.Raft.id)
-			rn.snapshot = rn.Raft.RaftLog.pendingSnapshot
-			ret.Snapshot = *rn.snapshot
-		} else {
-			log.Info("peerid=%d recviced repeated snap", rn.Raft.id)
-			rn.Raft.RaftLog.pendingSnapshot = nil
-		}
-		return ret
-	}
-	if rn.softState.compareSoftState(ret.SoftState) { // 如果 Ready 的过程中发现 rn.softState 已经就是 rn.Raft.Lead 和 rn.Raft.State，软状态没更新。
-		ret.SoftState = nil
-	}
-	if rn.hardState.Term == ret.HardState.Term &&
-		rn.hardState.Vote == ret.HardState.Vote &&
-		rn.hardState.Commit == ret.HardState.Commit {
-		ret.HardState = pb.HardState{ // 硬状态没更新
-			Term:   0,
-			Vote:   0,
-			Commit: 0,
-		}
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		Messages:         rn.Raft.msgs,
 	}
 
-	if len(rn.Raft.RaftLog.allEntries()) != 0 { // 计算待提交的 entry
-		// log.Infof("peerid=%d, commitid=%d, applied=%d", rn.Raft.id, rn.Raft.RaftLog.committed, rn.Raft.RaftLog.applied)
-		ret.CommittedEntries = rn.Raft.RaftLog.entries[(rn.Raft.RaftLog.applied-rn.Raft.RaftLog.entries[0].Index)+1 : (rn.Raft.RaftLog.committed-rn.Raft.RaftLog.entries[0].Index)+1]
+	curSoftState := rn.Raft.softState()
+	if !(curSoftState.Lead == rn.softState.Lead &&
+		curSoftState.RaftState == rn.softState.RaftState) {
+		ready.SoftState = curSoftState
+		rn.softState = curSoftState
 	}
-	if len(rn.Raft.msgs) != 0 {
-		ret.Messages = rn.Raft.msgs
+
+	curHardState := rn.Raft.hardState()
+	if !isHardStateEqual(curHardState, rn.hardState) {
+		ready.HardState = curHardState
+		// rn.prevHardState = curHardState
 	}
-	return ret
+
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+		// rn.Raft.RaftLog.pendingSnapshot = nil
+	}
+
+	rn.Raft.msgs = nil
+	return ready
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	// 比较软状态
+	curSoftState := rn.Raft.softState()
+	if !(curSoftState.Lead == rn.softState.Lead &&
+		curSoftState.RaftState == rn.softState.RaftState) {
+		return true
+	}
+	// 比较硬状态
+	curhardState := rn.Raft.hardState()
+	if !IsEmptyHardState(curhardState) &&
+		!isHardStateEqual(curhardState, rn.hardState) {
+		return true
+	}
+
+	// 有需要应用的条目 或者 有为发送的消息
+	if len(rn.Raft.RaftLog.unstableEntries()) > 0 ||
+		len(rn.Raft.msgs) > 0 || len(rn.Raft.RaftLog.nextEnts()) > 0 {
+		return true
+	}
+	// 有快照需要应用
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		return true
+	}
+
 	return false
 }
 
@@ -236,13 +235,11 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	if rd.Snapshot.Metadata != nil {
-		log.Infof("peerid=%d advance snapshot", rn.Raft.id)
-		rn.Raft.RaftLog.pendingSnapshot = nil
-		//rn.Raft.RaftLog.stabled = max(rd.Snapshot.Metadata.Index, rn.Raft.RaftLog.stabled)
-		// rn.Raft.RaftLog.entries = rn.Raft.RaftLog.entries[:0]
-		return
-	}
+	// if rd.Snapshot.Metadata != nil {
+	// 	log.Infof("peerid=%d advance snapshot", rn.Raft.id)
+	// 	rn.Raft.RaftLog.pendingSnapshot = nil
+	// 	return
+	// }
 	if len(rd.Entries) > 0 {
 		// log.Infof("peerid=%d set stabled from %d to %d", rn.Raft.id, rn.Raft.RaftLog.stabled, rd.Entries[len(rd.Entries)-1].Index)
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
@@ -252,6 +249,12 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 	if len(rn.Raft.msgs) != 0 {
 		rn.Raft.msgs = rn.Raft.msgs[:0]
+	}
+	if !IsEmptyHardState(rd.HardState) {
+		rn.hardState = rd.HardState
+	}
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		rn.Raft.RaftLog.pendingSnapshot = nil
 	}
 }
 

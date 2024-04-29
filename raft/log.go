@@ -16,6 +16,8 @@ package raft
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/pingcap-incubator/tinykv/log"
 
@@ -76,6 +78,9 @@ func newLog(storage Storage) *RaftLog {
 	// 现在添加一些初始条目
 	// 获取初始条目索引
 	firstIdx, err := storage.FirstIndex()
+	if firstIdx == 7 {
+		log.Info("xixixixii\n")
+	}
 	if err != nil {
 		log.Fatal(err)
 		return nil
@@ -158,7 +163,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 		return nil
 	}
 	if l.committed < l.applied {
-		log.Infof("committed:%d > applied:%d \n", l.committed, l.applied)
+		log.Infof("committed:%d < applied:%d \n", l.committed, l.applied)
 		return nil
 	}
 	if !(int(l.applied-l.entries[0].Index+1) >= 0 && int(l.committed-l.entries[0].Index) < len(l.entries)) {
@@ -207,6 +212,20 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		}
 		return 1, errors.New("entry id empty")
 	}
+	if !(i >= l.entries[0].Index && i <= l.entries[len(l.entries)-1].Index) {
+		log.Infof("hahahahaha:out of range: i: %d,,,,,,l.entries[0].Index: %d\n", i, l.entries[0].Index)
+		return 1, errors.New("index" + strconv.Itoa(int(i)) + " out of range")
+	}
 	// 正常返回
 	return l.entries[i-l.entries[0].Index].Term, nil
+}
+
+// 用于格式化输出。
+func (l *RaftLog) String() string {
+	entriesStr := "{"
+	for _, entry := range l.entries {
+		entriesStr += " [" + entry.String() + "] "
+	}
+	entriesStr += "}"
+	return fmt.Sprintf("RaftLog:{commit: %d applied: %d stabled: %d entries:%s}", l.committed, l.applied, l.stabled, entriesStr)
 }

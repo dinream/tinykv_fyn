@@ -136,12 +136,13 @@ func confchanger(t *testing.T, cluster *Cluster, ch chan bool, done *int32) {
 // operations to set of servers for some period of time.  After the period is
 // over, test checks that all sequential values are present and in order for a
 // particular key and perform Delete to clean up.
-// - If unreliable is set, RPCs may fail.
-// - If crash is set, the servers restart after the period is over.
-// - If partitions is set, the test repartitions the network concurrently between the servers.
-// - If maxraftlog is a positive number, the count of the persistent log for Raft shouldn't exceed 2*maxraftlog.
-// - If confchange is set, the cluster will schedule random conf change concurrently.
-// - If split is set, split region when size exceed 1024 bytes.
+// - If unreliable is set, RPCs may fail.	如果设置为true，网络将不可靠
+// - If crash is set, the servers restart after the period is over. 如果设置为true，服务器将在测试结束后重启，模拟服务器崩溃和恢复。
+// - If partitions is set, the test repartitions the network concurrently between the servers.	设置为true，测试将模拟网络分区。
+// - If maxraftlog is a positive number, the count of the persistent log for Raft shouldn't exceed 2*maxraftlog.	如果是正数，表示Raft日志的最大持久化数量，用于测试日志压缩。
+// - If confchange is set, the cluster will schedule random conf change concurrently.	如果设置为true，将随机进行集群配置更改。
+// - If split is set, split region when size exceed 1024 bytes.	 如果设置为true，当区域大小超过1024字节时，将分割区域。
+// 测试框架，旨在对分布式系统进行压力测试和功能验证。模拟不同的网络和系统条件，它检验系统在各种挑战下的稳健性和数据一致性。
 func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash bool, partitions bool, maxraftlog int, confchange bool, split bool) {
 	title := "Test: "
 	if unreliable {
