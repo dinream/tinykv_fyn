@@ -180,7 +180,7 @@ func (l *RaftLog) LastIndex() uint64 {
 		if l.pendingSnapshot != nil {
 			return l.pendingSnapshot.Metadata.Index
 		}
-		return 0
+		return 0 // TODO 这里是默认的 初始 index 我这里使用 0，是否要换成 5，不换时已经通过了 2b
 	}
 	return l.entries[len(l.entries)-1].Index
 }
