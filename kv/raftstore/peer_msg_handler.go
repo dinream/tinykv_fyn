@@ -52,10 +52,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 
 	if !(d.peer.RaftGroup.HasReady()) {
-		return
+		return // 如果没有节点变化，直接返回
 	}
 
-	// 保存日志
+	// 获取节点 ready
 	ready := d.RaftGroup.Ready()
 	// persisting log entries
 	result, err := d.peerStorage.SaveReadyState(&ready)
