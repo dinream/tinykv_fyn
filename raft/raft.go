@@ -255,7 +255,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	prevIndex := r.Prs[to].Next - 1
 	firstIndex := r.RaftLog.FirstIndex()
 
-	println(r.id, "send prevIndex:", prevIndex, "firstIndex:", r.RaftLog.FirstIndex())
+	println(r.id, "send prevIndex:", prevIndex, "firstIndex:", r.RaftLog.FirstIndex(), " Term:", r.Term)
 
 	prevLogTerm, err := r.RaftLog.Term(prevIndex)
 	if err != nil || prevIndex < firstIndex-1 {
@@ -454,6 +454,11 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgTimeoutNow:
 			r.handleTimeoutNow()
+		case pb.MessageType_MsgTransferLeader: //leader only
+			if r.Lead != None {
+				m.To = r.Lead
+				r.msgs = append(r.msgs, m)
+			}
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -472,6 +477,11 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgTimeoutNow:
 			r.handleTimeoutNow()
+		case pb.MessageType_MsgTransferLeader: //leader only
+			if r.Lead != None {
+				m.To = r.Lead
+				r.msgs = append(r.msgs, m)
+			}
 		}
 	case StateLeader: // 1. leader 需要 维护 peers
 		switch m.MsgType {
@@ -493,8 +503,10 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgHeartbeatResponse:
 			r.handleHeartbeatResponse(m)
-		case pb.MessageType_MsgTimeoutNow:
-			r.handleTimeoutNow()
+		// case pb.MessageType_MsgTimeoutNow:
+		// 	r.handleTimeoutNow()
+		case pb.MessageType_MsgTransferLeader:
+			r.handleTransferLeader(m)
 		}
 	}
 	return nil
@@ -824,7 +836,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	}
 	r.Prs[m.From].Next = m.Index + 1
 	r.Prs[m.From].Match = m.Index
-	// TODO:check if can TransferLeader
+	// TODO:check if can TransferLeader, 3a 可以不需要
 	if m.From == r.leadTransferee {
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: m.From})
 	}
@@ -849,16 +861,17 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 			}
 		}
 	}
-	if r.leadTransferee != 0 && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
-		log.Infof("peerid=%d, sendAppend to leaderTransferee=%d", r.id, r.leadTransferee)
-		r.msgs = append(r.msgs, pb.Message{
-			MsgType: pb.MessageType_MsgTimeoutNow,
-			To:      r.leadTransferee,
-			From:    r.id,
-			Term:    r.Term,
-		})
-		// r.leadTransferee = 0
-	}
+	// 目标节点拥有和自己一样新的日志，则发送 pb.MessageType_MsgTimeoutNow 到目标节点, 3a 可以不需要, ！和上面的 功能有点冲突
+	// if r.leadTransferee != 0 && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+	// 	log.Infof("peerid=%d, sendAppend to leaderTransferee=%d", r.id, r.leadTransferee)
+	// 	r.msgs = append(r.msgs, pb.Message{
+	// 		MsgType: pb.MessageType_MsgTimeoutNow,
+	// 		To:      r.leadTransferee,
+	// 		From:    r.id,
+	// 		Term:    r.Term,
+	// 	})
+	// 	// r.leadTransferee = 0
+	// }
 	return
 
 }
@@ -905,14 +918,69 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.RaftLog.pendingSnapshot = m.Snapshot
 }
 
+// handle TransferLeader, leader only
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
+	r.leadTransferee = m.From
+
+	if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		msg := pb.Message{
+			MsgType: pb.MessageType_MsgTimeoutNow,
+			From:    r.id,
+			To:      m.From,
+		}
+		r.msgs = append(r.msgs, msg)
+	} else {
+		r.sendAppend(m.From)
+	}
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{
+			Match: 0,
+			Next:  1,
+		}
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+
+	if r.id == id {
+		r.Prs = make(map[uint64]*Progress)
+		return
+	}
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+	}
+
+	// tp pass TestCommitAfterRemoveNode3A test
+	match := make(uint64Slice, len(r.Prs))
+	i := 0
+	for _, prs := range r.Prs {
+		match[i] = prs.Match
+		i++
+	}
+	sort.Sort(match)
+	Match := match[(len(r.Prs)-1)/2]
+	matchTerm, _ := r.RaftLog.Term(Match)
+	if Match > r.RaftLog.committed && matchTerm == r.Term {
+		r.RaftLog.committed = Match
+
+	}
+
+	// for peer := range r.Prs {
+	// 	if peer != r.id {
+	// 		r.sendAppend(peer)
+	// 	}
+	// }
+
 }
 
 func (r *Raft) handleTimeoutNow() {
